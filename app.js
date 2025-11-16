@@ -486,8 +486,12 @@ async function trainModel() {
         const valFeatures = tf.tensor2d(split.valFeatures);
         const valLabels = tf.tensor1d(split.valLabels);
 
-        const visCallbacks = tfvis.show.fitCallbacks({ name: 'Training Performance', tab: 'Training' }, ['loss', 'val_loss', 'acc', 'val_acc'], { callbacks: ['onEpochEnd'] });
-        const earlyStop = tf.callbacks.earlyStopping({ monitor: 'val_loss', patience: 5, restoreBestWeight: true });
+        const visCallbacks = tfvis.show.fitCallbacks(
+            { name: 'Training Performance', tab: 'Training' },
+            ['loss', 'val_loss', 'acc', 'val_acc'],
+            { callbacks: ['onEpochEnd'] }
+        );
+        const earlyStop = createEarlyStoppingCallback(5, statusDiv);
         const logCallback = {
             onEpochEnd: (epoch, logs) => {
                 if (logs.acc === undefined && logs.accuracy !== undefined) {
@@ -536,6 +540,49 @@ async function trainModel() {
         statusDiv.innerHTML = `Error during training: ${error.message}`;
         console.error(error);
     }
+}
+
+function createEarlyStoppingCallback(patience = 5, statusDiv = null) {
+    let bestLoss = Infinity;
+    let wait = 0;
+    let bestWeights = null;
+
+    function cacheBestWeights() {
+        if (!model) return;
+        if (bestWeights) {
+            bestWeights.forEach(weight => weight.dispose());
+        }
+        bestWeights = model.getWeights().map(weight => weight.clone());
+    }
+
+    return {
+        onEpochEnd: (epoch, logs = {}) => {
+            const valLoss = logs.val_loss;
+            if (valLoss == null || !Number.isFinite(valLoss)) {
+                return;
+            }
+
+            if (valLoss + 1e-6 < bestLoss) {
+                bestLoss = valLoss;
+                wait = 0;
+                cacheBestWeights();
+            } else {
+                wait += 1;
+                if (wait >= patience && model) {
+                    model.stopTraining = true;
+                    if (statusDiv) {
+                        statusDiv.innerHTML += `<p>Early stopping triggered at epoch ${epoch + 1}.</p>`;
+                    }
+                }
+            }
+        },
+        onTrainEnd: () => {
+            if (model && bestWeights) {
+                model.setWeights(bestWeights);
+                bestWeights = null;
+            }
+        }
+    };
 }
 
 function stratifiedSplit(features, labels, valFraction) {
